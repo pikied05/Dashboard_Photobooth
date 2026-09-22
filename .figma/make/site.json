@@ -1,0 +1,10 @@
+{
+  "description": "Manage your photo booth experience with an intuitive dashboard for uploading frames, toggling booth settings, and tracking payments and events.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
