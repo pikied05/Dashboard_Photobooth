@@ -1,5 +1,22 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "./lib/api";
+import { supabase } from "../utils/supabase/client";
+
+const BUCKET_MARCOS = "marcos";
+
+async function subirImagenMarco(file: File): Promise<string> {
+  const extension = file.name.split(".").pop();
+  const rutaArchivo = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+
+  const { error } = await supabase.storage.from(BUCKET_MARCOS).upload(rutaArchivo, file, {
+    cacheControl: "3600",
+    upsert: false,
+  });
+  if (error) throw error;
+
+  const { data } = supabase.storage.from(BUCKET_MARCOS).getPublicUrl(rutaArchivo);
+  return data.publicUrl;
+}
 
 const NAV_ITEMS = [
   { id: "resumen", label: "Resumen" },
@@ -100,7 +117,12 @@ export default function App() {
         <div className="mx-12 border-t border-[#0d0d0d]/10 mb-10" />
         <div className="px-12 pb-12">
           {navActivo === "resumen" && <Resumen totalIngresos={totalIngresos} totalFotos={totalFotos} marcosActivos={marcosActivos} boothActivo={boothActivo} setBoothActivo={setBoothActivo} pagos={pagos} marcos={marcos} />}
-          {navActivo === "marcos" && <Marcos marcos={marcos} toggleMarco={toggleMarco} arrastreEncima={arrastreEncima} setArrastreEncima={setArrastreEncima} onCrear={async (nombre: string) => { const m = await api.marcos.create({ nombre, activo: true, usos: 0 }); setMarcos((prev) => [...prev, m]); }} />}
+          {navActivo === "marcos" && <Marcos marcos={marcos} toggleMarco={toggleMarco} arrastreEncima={arrastreEncima} setArrastreEncima={setArrastreEncima} onCrear={async (nombre: string, archivo: File | null) => {
+            let imagen_url: string | undefined;
+            if (archivo) imagen_url = await subirImagenMarco(archivo);
+            const m = await api.marcos.create({ nombre, activo: true, usos: 0, imagen_url });
+            setMarcos((prev) => [...prev, m]);
+          }} />}
           {navActivo === "fotobooth" && <PanelFotobooth boothActivo={boothActivo} setBoothActivo={setBoothActivo} />}
           {navActivo === "pagos" && <Pagos pagos={pagos} totalIngresos={totalIngresos} eventos={eventos} onActualizar={async (id: number, estado: string) => { await api.pagos.update(id, { estado }); setPagos((prev) => prev.map((p) => p.id === id ? { ...p, estado } : p)); }} />}
           {navActivo === "eventos" && <PanelEventos eventos={eventos} onCrear={async (ev: any) => { const nuevo = await api.eventos.create(ev); setEventos((prev) => [...prev, nuevo]); }} onActualizar={async (id: number, data: any) => { const actualizado = await api.eventos.update(id, data); setEventos((prev) => prev.map((e) => e.id === id ? actualizado : e)); }} onEliminar={async (id: number) => { await api.eventos.delete(id); setEventos((prev) => prev.filter((e) => e.id !== id)); }} />}
@@ -173,41 +195,95 @@ function Resumen({ totalIngresos, totalFotos, marcosActivos, boothActivo, setBoo
 }
 
 /* ─── Marcos ─── */
+const MAX_MARCO_MB = 10;
+
 function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrear }: any) {
   const [nombreNuevo, setNombreNuevo] = useState("");
+  const [archivo, setArchivo] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const validarYFijarArchivo = (file: File | undefined | null) => {
+    setError(null);
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Ese archivo no es una imagen.");
+      return;
+    }
+    if (file.size > MAX_MARCO_MB * 1024 * 1024) {
+      setError(`El archivo pesa más de ${MAX_MARCO_MB}MB.`);
+      return;
+    }
+    setArchivo(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    if (!nombreNuevo.trim()) {
+      setNombreNuevo(file.name.replace(/\.[^/.]+$/, ""));
+    }
+  };
 
   const handleCrear = async () => {
     if (!nombreNuevo.trim()) return;
     setGuardando(true);
-    await onCrear(nombreNuevo.trim());
-    setNombreNuevo("");
-    setGuardando(false);
+    setError(null);
+    try {
+      await onCrear(nombreNuevo.trim(), archivo);
+      setNombreNuevo("");
+      setArchivo(null);
+      setPreviewUrl(null);
+      if (inputRef.current) inputRef.current.value = "";
+    } catch (err: any) {
+      console.error("Error subiendo marco:", err);
+      setError("No se pudo subir el marco. Intenta de nuevo.");
+    } finally {
+      setGuardando(false);
+    }
   };
 
   return (
     <div className="space-y-10">
-      <div onDragOver={(e) => { e.preventDefault(); setArrastreEncima(true); }}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setArrastreEncima(true); }}
         onDragLeave={() => setArrastreEncima(false)}
-        onDrop={(e) => { e.preventDefault(); setArrastreEncima(false); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setArrastreEncima(false);
+          validarYFijarArchivo(e.dataTransfer.files?.[0]);
+        }}
+        onClick={() => inputRef.current?.click()}
         className={`border transition-all duration-200 p-16 flex flex-col items-center gap-4 cursor-pointer ${arrastreEncima ? "border-[#0d0d0d] bg-[#0d0d0d]/5" : "border-[#0d0d0d]/20 hover:border-[#0d0d0d]/50"}`}>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-[#0d0d0d]/40">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
-        </svg>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => validarYFijarArchivo(e.target.files?.[0])}
+        />
+        {previewUrl ? (
+          <img src={previewUrl} alt="Vista previa" className="max-h-24 object-contain" />
+        ) : (
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-[#0d0d0d]/40">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+        )}
         <div className="text-center">
-          <p className="text-sm font-light text-[#0d0d0d]/70">Arrastra marcos aquí</p>
-          <p className="text-[10px] uppercase tracking-[0.15em] text-[#0d0d0d]/30 mt-1">PNG transparente recomendado · máx 10MB</p>
+          <p className="text-sm font-light text-[#0d0d0d]/70">
+            {archivo ? archivo.name : "Arrastra un marco aquí o haz clic para elegirlo"}
+          </p>
+          <p className="text-[10px] uppercase tracking-[0.15em] text-[#0d0d0d]/30 mt-1">PNG transparente recomendado · máx {MAX_MARCO_MB}MB</p>
         </div>
-        <div className="flex gap-2 mt-2">
+        <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
           <input value={nombreNuevo} onChange={(e) => setNombreNuevo(e.target.value)}
             placeholder="Nombre del marco"
             className="px-4 py-2 bg-transparent border border-[#0d0d0d]/20 text-sm font-light focus:outline-none focus:border-[#0d0d0d]/50 placeholder-[#0d0d0d]/30"
             onKeyDown={(e) => e.key === "Enter" && handleCrear()} />
           <button onClick={handleCrear} disabled={guardando || !nombreNuevo.trim()}
             className="px-6 py-2 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] font-medium hover:bg-[#0d0d0d]/80 transition-colors disabled:opacity-40">
-            {guardando ? "..." : "Agregar"}
+            {guardando ? "Subiendo..." : "Agregar"}
           </button>
         </div>
+        {error && <p className="text-[10px] uppercase tracking-[0.15em] text-red-500">{error}</p>}
       </div>
       <div>
         <div className="flex items-center justify-between mb-6">
@@ -220,8 +296,12 @@ function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrea
           <div className="grid grid-cols-3 lg:grid-cols-6 gap-px bg-[#0d0d0d]/10">
             {marcos.map((marco: any) => (
               <div key={marco.id} className={`bg-[#e9e5dc] p-5 flex flex-col gap-4 transition-all duration-200 ${!marco.activo ? "opacity-35" : ""}`}>
-                <div className="mx-auto bg-white p-1.5 shadow-sm" style={{ width: 44 }}>
-                  {[...Array(3)].map((_, i) => <div key={i} className="bg-[#d8d4cc] mb-0.5 last:mb-0" style={{ height: 20 }} />)}
+                <div className="mx-auto bg-white p-1.5 shadow-sm flex items-center justify-center" style={{ width: 44, height: 64 }}>
+                  {marco.imagen_url ? (
+                    <img src={marco.imagen_url} alt={marco.nombre} className="max-w-full max-h-full object-contain" />
+                  ) : (
+                    [...Array(3)].map((_, i) => <div key={i} className="bg-[#d8d4cc] mb-0.5 last:mb-0 w-full" style={{ height: 20 }} />)
+                  )}
                 </div>
                 <div className="text-center">
                   <p className="text-base font-bold leading-none" style={{ fontFamily: "'Playfair Display', serif" }}>{marco.usos}</p>
