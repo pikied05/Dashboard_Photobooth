@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "./lib/api";
 import { supabase } from "../utils/supabase/client";
+import type { Session } from "@supabase/supabase-js";
 
 const BUCKET_MARCOS = "marcos";
 
@@ -37,7 +38,7 @@ function diaSemana(iso: string) {
   return dias[new Date(iso + "T12:00:00").getDay()];
 }
 
-export default function App() {
+function Dashboard({ onSalir }: { onSalir: () => void }) {
   const [navActivo, setNavActivo] = useState("resumen");
   const [boothActivo, setBoothActivo] = useState(true);
   const [marcos, setMarcos] = useState<any[]>([]);
@@ -99,6 +100,10 @@ export default function App() {
             className={`w-full flex items-center gap-2.5 px-4 py-3 rounded-full text-xs uppercase tracking-[0.15em] font-medium transition-all duration-300 ${boothActivo ? "bg-[#0d0d0d] text-[#e9e5dc]" : "bg-[#0d0d0d]/10 text-[#0d0d0d]/50"}`}>
             <span className={`w-1.5 h-1.5 rounded-full flex-none ${boothActivo ? "bg-[#e9e5dc]" : "bg-[#0d0d0d]/30"}`} />
             {boothActivo ? "Booth activo" : "Booth inactivo"}
+          </button>
+          <button onClick={onSalir}
+            className="w-full mt-4 text-left text-[10px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 hover:text-[#0d0d0d]/70 transition-colors">
+            Cerrar sesión
           </button>
         </div>
       </aside>
@@ -641,4 +646,80 @@ function InsigniaEstado({ estado }: { estado: string }) {
     Fallido: "text-[#8b2a2a]",
   };
   return <span className={`text-[9px] uppercase tracking-[0.18em] font-medium ${estilos[estado] || "text-[#0d0d0d]/40"}`}>{estado}</span>;
+}
+
+/* ─── Login ─── */
+function Login() {
+  const [correo, setCorreo] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [entrando, setEntrando] = useState(false);
+
+  const entrar = async () => {
+    if (!correo || !password) return;
+    setEntrando(true);
+    setError("");
+    const { error } = await supabase.auth.signInWithPassword({ email: correo, password });
+    if (error) setError("Correo o contraseña incorrectos.");
+    setEntrando(false);
+  };
+
+  return (
+    <div className="flex min-h-screen bg-[#e9e5dc] text-[#0d0d0d] items-center justify-center px-6" style={{ fontFamily: "'Inter', sans-serif" }}>
+      <div className="w-full max-w-xs">
+        <p className="text-xs uppercase tracking-[0.2em] text-[#0d0d0d]/40 mb-1">Photo Booth</p>
+        <h1 className="text-4xl mb-10" style={{ fontFamily: "'Playfair Display', serif", fontStyle: "italic" }}>Iniciar sesión</h1>
+        <div className="space-y-6">
+          <div>
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 mb-1">Correo</p>
+            <input type="email" value={correo} autoComplete="email"
+              onChange={(e) => setCorreo(e.target.value)}
+              className="w-full bg-transparent border-b border-[#0d0d0d]/20 text-sm font-light py-1.5 focus:outline-none focus:border-[#0d0d0d]/60" />
+          </div>
+          <div>
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 mb-1">Contraseña</p>
+            <input type="password" value={password} autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && entrar()}
+              className="w-full bg-transparent border-b border-[#0d0d0d]/20 text-sm font-light py-1.5 focus:outline-none focus:border-[#0d0d0d]/60" />
+          </div>
+          {error && <p className="text-xs text-[#8b2a2a]">{error}</p>}
+          <button onClick={entrar} disabled={entrando || !correo || !password}
+            className="w-full py-2.5 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] font-medium hover:bg-[#0d0d0d]/80 transition-colors disabled:opacity-40">
+            {entrando ? "Entrando..." : "Entrar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── App: decide entre Login y Dashboard según la sesión ─── */
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [verificando, setVerificando] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setVerificando(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_evento, nuevaSesion) => {
+      setSession(nuevaSesion);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  if (verificando) {
+    return (
+      <div className="flex min-h-screen bg-[#e9e5dc] items-center justify-center">
+        <p className="text-[10px] uppercase tracking-[0.2em] text-[#0d0d0d]/40">Cargando...</p>
+      </div>
+    );
+  }
+
+  if (!session) return <Login />;
+
+  // key por usuario: al cambiar de sesión el Dashboard se monta limpio y recarga los datos
+  return <Dashboard key={session.user.id} onSalir={() => supabase.auth.signOut()} />;
 }
