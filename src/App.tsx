@@ -649,19 +649,38 @@ function InsigniaEstado({ estado }: { estado: string }) {
 }
 
 /* ─── Login ─── */
-function Login() {
+function Login({ avisoInicial = "" }: { avisoInicial?: string }) {
   const [correo, setCorreo] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(avisoInicial);
+  const [aviso, setAviso] = useState("");
   const [entrando, setEntrando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
 
   const entrar = async () => {
     if (!correo || !password) return;
     setEntrando(true);
     setError("");
+    setAviso("");
     const { error } = await supabase.auth.signInWithPassword({ email: correo, password });
     if (error) setError("Correo o contraseña incorrectos.");
     setEntrando(false);
+  };
+
+  const recuperar = async () => {
+    setError("");
+    setAviso("");
+    if (!correo) {
+      setError("Escribe tu correo para enviarte el enlace.");
+      return;
+    }
+    setEnviando(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(correo, {
+      redirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
+    });
+    setEnviando(false);
+    if (error) setError("No se pudo enviar el enlace. Intenta de nuevo en unos minutos.");
+    else setAviso("Si el correo existe, te enviamos un enlace para crear una contraseña nueva.");
   };
 
   return (
@@ -684,9 +703,14 @@ function Login() {
               className="w-full bg-transparent border-b border-[#0d0d0d]/20 text-sm font-light py-1.5 focus:outline-none focus:border-[#0d0d0d]/60" />
           </div>
           {error && <p className="text-xs text-[#8b2a2a]">{error}</p>}
+          {aviso && <p className="text-xs text-[#2a6b3a]">{aviso}</p>}
           <button onClick={entrar} disabled={entrando || !correo || !password}
             className="w-full py-2.5 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] font-medium hover:bg-[#0d0d0d]/80 transition-colors disabled:opacity-40">
             {entrando ? "Entrando..." : "Entrar"}
+          </button>
+          <button onClick={recuperar} disabled={enviando}
+            className="w-full text-left text-[10px] uppercase tracking-[0.2em] text-[#0d0d0d]/40 hover:text-[#0d0d0d]/70 transition-colors disabled:opacity-40">
+            {enviando ? "Enviando enlace..." : "¿Olvidaste tu contraseña?"}
           </button>
         </div>
       </div>
@@ -694,18 +718,81 @@ function Login() {
   );
 }
 
-/* ─── App: decide entre Login y Dashboard según la sesión ─── */
+/* ─── Contraseña nueva (después de abrir el enlace del correo) ─── */
+function NuevaPassword({ onListo }: { onListo: () => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmar, setConfirmar] = useState("");
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async () => {
+    setError("");
+    if (password.length < 8) {
+      setError("Usa al menos 8 caracteres.");
+      return;
+    }
+    if (password !== confirmar) {
+      setError("Las contraseñas no coinciden.");
+      return;
+    }
+    setGuardando(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setGuardando(false);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    // limpia el #...type=recovery de la URL
+    window.history.replaceState(null, "", window.location.pathname);
+    onListo();
+  };
+
+  return (
+    <div className="flex min-h-screen bg-[#e9e5dc] text-[#0d0d0d] items-center justify-center px-6" style={{ fontFamily: "'Inter', sans-serif" }}>
+      <div className="w-full max-w-xs">
+        <p className="text-xs uppercase tracking-[0.2em] text-[#0d0d0d]/40 mb-1">Photo Booth</p>
+        <h1 className="text-4xl mb-10" style={{ fontFamily: "'Playfair Display', serif", fontStyle: "italic" }}>Contraseña nueva</h1>
+        <div className="space-y-6">
+          <div>
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 mb-1">Contraseña nueva</p>
+            <input type="password" value={password} autoComplete="new-password"
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-transparent border-b border-[#0d0d0d]/20 text-sm font-light py-1.5 focus:outline-none focus:border-[#0d0d0d]/60" />
+          </div>
+          <div>
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 mb-1">Repite la contraseña</p>
+            <input type="password" value={confirmar} autoComplete="new-password"
+              onChange={(e) => setConfirmar(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && guardar()}
+              className="w-full bg-transparent border-b border-[#0d0d0d]/20 text-sm font-light py-1.5 focus:outline-none focus:border-[#0d0d0d]/60" />
+          </div>
+          {error && <p className="text-xs text-[#8b2a2a]">{error}</p>}
+          <button onClick={guardar} disabled={guardando || !password || !confirmar}
+            className="w-full py-2.5 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] font-medium hover:bg-[#0d0d0d]/80 transition-colors disabled:opacity-40">
+            {guardando ? "Guardando..." : "Guardar contraseña"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── App: decide entre Login, contraseña nueva y Dashboard ─── */
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [verificando, setVerificando] = useState(true);
+  // se calcula en el primer render, antes de que supabase-js limpie el # de la URL
+  const [recuperando, setRecuperando] = useState(() => window.location.hash.includes("type=recovery"));
+  const [enlaceVencido] = useState(() => window.location.hash.includes("error_code=otp_expired"));
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setVerificando(false);
     });
-    const { data } = supabase.auth.onAuthStateChange((_evento, nuevaSesion) => {
+    const { data } = supabase.auth.onAuthStateChange((evento, nuevaSesion) => {
       setSession(nuevaSesion);
+      if (evento === "PASSWORD_RECOVERY") setRecuperando(true);
     });
     return () => data.subscription.unsubscribe();
   }, []);
@@ -718,7 +805,11 @@ export default function App() {
     );
   }
 
-  if (!session) return <Login />;
+  if (!session) {
+    return <Login avisoInicial={enlaceVencido ? "El enlace venció o ya se usó. Pide uno nuevo." : ""} />;
+  }
+
+  if (recuperando) return <NuevaPassword onListo={() => setRecuperando(false)} />;
 
   // key por usuario: al cambiar de sesión el Dashboard se monta limpio y recarga los datos
   return <Dashboard key={session.user.id} onSalir={() => supabase.auth.signOut()} />;
