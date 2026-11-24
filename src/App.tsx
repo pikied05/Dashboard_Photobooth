@@ -41,6 +41,8 @@ function diaSemana(iso: string) {
 function Dashboard({ onSalir }: { onSalir: () => void }) {
   const [navActivo, setNavActivo] = useState("resumen");
   const [boothActivo, setBoothActivo] = useState(true);
+  const [modo, setModo] = useState<"cabina" | "evento">("cabina");
+  const [guardandoModo, setGuardandoModo] = useState(false);
   const [marcos, setMarcos] = useState<any[]>([]);
   const [pagos, setPagos] = useState<any[]>([]);
   const [eventos, setEventos] = useState<any[]>([]);
@@ -53,6 +55,11 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
       setMarcos(m);
       setPagos(p);
       setEventos(e);
+
+      // modo guardado (si la tabla aún no existe, se queda en "cabina")
+      const { data: cfg } = await supabase
+        .from("configuracion").select("valor").eq("clave", "modo").maybeSingle();
+      if (cfg?.valor === "evento" || cfg?.valor === "cabina") setModo(cfg.valor);
     } catch (err) {
       console.error("Error cargando datos:", err);
     } finally {
@@ -65,6 +72,24 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
   const toggleMarco = async (id: number, activo: boolean) => {
     setMarcos((prev) => prev.map((m) => m.id === id ? { ...m, activo: !activo } : m));
     await api.marcos.update(id, { activo: !activo });
+  };
+
+  const cambiarModo = async (nuevo: "cabina" | "evento") => {
+    if (nuevo === modo || guardandoModo) return;
+    const anterior = modo;
+    setModo(nuevo);
+    setGuardandoModo(true);
+    const { data, error } = await supabase
+      .from("configuracion")
+      .update({ valor: nuevo, updated_at: new Date().toISOString() })
+      .eq("clave", "modo")
+      .select();
+    setGuardandoModo(false);
+    if (error || !data?.length) {
+      console.error("Error guardando el modo:", error);
+      setModo(anterior);
+      alert("No se pudo cambiar el modo. Revisa tu conexión e inténtalo de nuevo.");
+    }
   };
 
   const totalIngresos = pagos.filter((p) => p.estado === "Pagado").reduce((s, p) => s + Number(p.monto), 0);
@@ -96,6 +121,17 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
           ))}
         </nav>
         <div className="mt-auto">
+          <div className="mb-4">
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30 mb-2">Modo</p>
+            <div className="flex rounded-full bg-[#0d0d0d]/10 p-0.5">
+              {(["cabina", "evento"] as const).map((m) => (
+                <button key={m} onClick={() => cambiarModo(m)} disabled={guardandoModo}
+                  className={`flex-1 py-2 rounded-full text-[10px] uppercase tracking-[0.15em] font-medium transition-all duration-200 disabled:opacity-60 ${modo === m ? "bg-[#0d0d0d] text-[#e9e5dc]" : "text-[#0d0d0d]/50 hover:text-[#0d0d0d]/80"}`}>
+                  {m === "cabina" ? "Cabina" : "Evento"}
+                </button>
+              ))}
+            </div>
+          </div>
           <button onClick={() => setBoothActivo((v) => !v)}
             className={`w-full flex items-center gap-2.5 px-4 py-3 rounded-full text-xs uppercase tracking-[0.15em] font-medium transition-all duration-300 ${boothActivo ? "bg-[#0d0d0d] text-[#e9e5dc]" : "bg-[#0d0d0d]/10 text-[#0d0d0d]/50"}`}>
             <span className={`w-1.5 h-1.5 rounded-full flex-none ${boothActivo ? "bg-[#e9e5dc]" : "bg-[#0d0d0d]/30"}`} />
@@ -110,6 +146,14 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
+        {modo === "evento" && (
+          <div className="mx-12 mt-8 px-4 py-2.5 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] flex items-center justify-between">
+            <span>Modo evento activo · la cabina no cobra</span>
+            <button onClick={() => cambiarModo("cabina")} className="underline underline-offset-4 hover:opacity-70">
+              Volver a cabina
+            </button>
+          </div>
+        )}
         <header className="px-12 pt-10 pb-8 flex items-start justify-between">
           <h1 className="text-4xl text-[#0d0d0d]" style={{ fontFamily: "'Playfair Display', serif", fontStyle: "italic" }}>
             {NAV_ITEMS.find((n) => n.id === navActivo)?.label}
