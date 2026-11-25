@@ -3,20 +3,28 @@ import { api } from "./lib/api";
 import { supabase } from "../utils/supabase/client";
 import type { Session } from "@supabase/supabase-js";
 
-const BUCKET_MARCOS = "marcos";
+const BUCKET_FRAMES = "frames";
 
+// Sube el PNG al bucket "frames" y devuelve su ruta (se guarda en frames.archivo_path)
 async function subirImagenMarco(file: File): Promise<string> {
   const extension = file.name.split(".").pop();
   const rutaArchivo = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
 
-  const { error } = await supabase.storage.from(BUCKET_MARCOS).upload(rutaArchivo, file, {
+  const { error } = await supabase.storage.from(BUCKET_FRAMES).upload(rutaArchivo, file, {
     cacheControl: "3600",
     upsert: false,
+    contentType: file.type,
   });
   if (error) throw error;
 
-  const { data } = supabase.storage.from(BUCKET_MARCOS).getPublicUrl(rutaArchivo);
-  return data.publicUrl;
+  return rutaArchivo;
+}
+
+async function medirImagen(file: File): Promise<{ ancho_px: number; alto_px: number }> {
+  const bmp = await createImageBitmap(file);
+  const medidas = { ancho_px: bmp.width, alto_px: bmp.height };
+  bmp.close();
+  return medidas;
 }
 
 const NAV_ITEMS = [
@@ -50,28 +58,27 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
   const [arrastreEncima, setArrastreEncima] = useState(false);
 
   const cargarDatos = useCallback(async () => {
-    try {
-      const [m, p, e] = await Promise.all([api.marcos.list(), api.pagos.list(), api.eventos.list()]);
-      setMarcos(m);
-      setPagos(p);
-      setEventos(e);
-
-      // modo guardado (si la tabla aún no existe, se queda en "cabina")
-      const { data: cfg } = await supabase
-        .from("configuracion").select("valor").eq("clave", "modo").maybeSingle();
-      if (cfg?.valor === "evento" || cfg?.valor === "cabina") setModo(cfg.valor);
-    } catch (err) {
-      console.error("Error cargando datos:", err);
-    } finally {
-      setCargando(false);
-    }
+    // cada tabla carga por separado: si una falla (p. ej. permisos), las demás siguen
+    const [m, p, e, modoGuardado] = await Promise.allSettled([
+      api.marcos.list(), api.pagos.list(), api.eventos.list(), api.cabinas.modo(),
+    ]);
+    if (m.status === "fulfilled") setMarcos(m.value); else console.error("Error cargando marcos (frames):", m.reason);
+    if (p.status === "fulfilled") setPagos(p.value); else console.error("Error cargando pagos (sesiones):", p.reason);
+    if (e.status === "fulfilled") setEventos(e.value); else console.error("Error cargando eventos:", e.reason);
+    if (modoGuardado.status === "fulfilled") setModo(modoGuardado.value); else console.error("Error cargando el modo (cabinas):", modoGuardado.reason);
+    setCargando(false);
   }, []);
 
   useEffect(() => { cargarDatos(); }, [cargarDatos]);
 
-  const toggleMarco = async (id: number, activo: boolean) => {
+  const toggleMarco = async (id: string, activo: boolean) => {
     setMarcos((prev) => prev.map((m) => m.id === id ? { ...m, activo: !activo } : m));
-    await api.marcos.update(id, { activo: !activo });
+    try {
+      await api.marcos.update(id, { activo: !activo });
+    } catch (err) {
+      console.error("Error actualizando el marco:", err);
+      setMarcos((prev) => prev.map((m) => m.id === id ? { ...m, activo } : m));
+    }
   };
 
   const cambiarModo = async (nuevo: "cabina" | "evento") => {
@@ -79,17 +86,14 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
     const anterior = modo;
     setModo(nuevo);
     setGuardandoModo(true);
-    const { data, error } = await supabase
-      .from("configuracion")
-      .update({ valor: nuevo, updated_at: new Date().toISOString() })
-      .eq("clave", "modo")
-      .select();
-    setGuardandoModo(false);
-    if (error || !data?.length) {
-      console.error("Error guardando el modo:", error);
+    try {
+      await api.cabinas.setModo(nuevo);
+    } catch (err) {
+      console.error("Error guardando el modo:", err);
       setModo(anterior);
       alert("No se pudo cambiar el modo. Revisa tu conexión e inténtalo de nuevo.");
     }
+    setGuardandoModo(false);
   };
 
   const totalIngresos = pagos.filter((p) => p.estado === "Pagado").reduce((s, p) => s + Number(p.monto), 0);
@@ -167,13 +171,17 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
         <div className="px-12 pb-12">
           {navActivo === "resumen" && <Resumen totalIngresos={totalIngresos} totalFotos={totalFotos} marcosActivos={marcosActivos} boothActivo={boothActivo} setBoothActivo={setBoothActivo} pagos={pagos} marcos={marcos} />}
           {navActivo === "marcos" && <Marcos marcos={marcos} toggleMarco={toggleMarco} arrastreEncima={arrastreEncima} setArrastreEncima={setArrastreEncima} onCrear={async (nombre: string, archivo: File | null) => {
-            let imagen_url: string | undefined;
-            if (archivo) imagen_url = await subirImagenMarco(archivo);
-            const m = await api.marcos.create({ nombre, activo: true, usos: 0, imagen_url });
+            let archivo_path: string | undefined;
+            let medidas: { ancho_px?: number; alto_px?: number } = {};
+            if (archivo) {
+              medidas = await medirImagen(archivo);
+              archivo_path = await subirImagenMarco(archivo);
+            }
+            const m = await api.marcos.create({ nombre, archivo_path, ...medidas });
             setMarcos((prev) => [...prev, m]);
           }} />}
           {navActivo === "fotobooth" && <PanelFotobooth boothActivo={boothActivo} setBoothActivo={setBoothActivo} />}
-          {navActivo === "pagos" && <Pagos pagos={pagos} totalIngresos={totalIngresos} eventos={eventos} onActualizar={async (id: number, estado: string) => { await api.pagos.update(id, { estado }); setPagos((prev) => prev.map((p) => p.id === id ? { ...p, estado } : p)); }} />}
+          {navActivo === "pagos" && <Pagos pagos={pagos} totalIngresos={totalIngresos} eventos={eventos} onActualizar={async (id: string, estado: string) => { await api.pagos.update(id, { estado }); setPagos((prev) => prev.map((p) => p.id === id ? { ...p, estado } : p)); }} />}
           {navActivo === "eventos" && <PanelEventos eventos={eventos} onCrear={async (ev: any) => { const nuevo = await api.eventos.create(ev); setEventos((prev) => [...prev, nuevo]); }} onActualizar={async (id: number, data: any) => { const actualizado = await api.eventos.update(id, data); setEventos((prev) => prev.map((e) => e.id === id ? actualizado : e)); }} onEliminar={async (id: number) => { await api.eventos.delete(id); setEventos((prev) => prev.filter((e) => e.id !== id)); }} />}
         </div>
       </main>
@@ -209,7 +217,7 @@ function Resumen({ totalIngresos, totalFotos, marcosActivos, boothActivo, setBoo
               {pagos.slice(0, 5).map((p: any, i: number) => (
                 <div key={p.id} className={`flex items-center justify-between py-4 ${i < 4 ? "border-b border-[#0d0d0d]/10" : ""}`}>
                   <div className="flex items-center gap-4">
-                    <span className="text-xs font-mono text-[#0d0d0d]/30 w-20">TXN-{String(p.id).padStart(4, "0")}</span>
+                    <span className="text-xs font-mono text-[#0d0d0d]/30 w-20">TXN-{p.ref}</span>
                     <span className="text-sm font-light">{p.invitado}</span>
                   </div>
                   <div className="flex items-center gap-6">
@@ -436,7 +444,7 @@ function PanelFotobooth({ boothActivo, setBoothActivo }: any) {
 /* ─── Pagos ─── */
 function Pagos({ pagos, totalIngresos, eventos, onActualizar }: any) {
   const [filtro, setFiltro] = useState("Todos");
-  const filtros = ["Todos", "Pagado", "Pendiente", "Fallido"];
+  const filtros = ["Todos", "Pagado", "Pendiente"];
   const filtrados = filtro === "Todos" ? pagos : pagos.filter((p: any) => p.estado === filtro);
   const pendientes = pagos.filter((p: any) => p.estado === "Pendiente").reduce((s: number, p: any) => s + Number(p.monto), 0);
 
@@ -469,7 +477,7 @@ function Pagos({ pagos, totalIngresos, eventos, onActualizar }: any) {
         </div>
         <div className="border-t border-[#0d0d0d]/10">
           <div className="grid grid-cols-6 py-3 border-b border-[#0d0d0d]/10">
-            {["ID", "Invitado", "Fotos", "Monto", "Fecha", "Estado"].map((h) => (
+            {["ID", "Sesión", "Fotos", "Monto", "Fecha", "Estado"].map((h) => (
               <p key={h} className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30">{h}</p>
             ))}
           </div>
@@ -478,7 +486,7 @@ function Pagos({ pagos, totalIngresos, eventos, onActualizar }: any) {
           ) : (
             filtrados.map((p: any, i: number) => (
               <div key={p.id} className={`grid grid-cols-6 py-4 items-center border-b border-[#0d0d0d]/8 hover:bg-[#0d0d0d]/3 transition-colors ${i % 2 === 1 ? "bg-[#0d0d0d]/[0.015]" : ""}`}>
-                <p className="text-[10px] font-mono text-[#0d0d0d]/30">TXN-{String(p.id).padStart(4, "0")}</p>
+                <p className="text-[10px] font-mono text-[#0d0d0d]/30">TXN-{p.ref}</p>
                 <div>
                   <p className="text-sm font-light">{p.invitado}</p>
                   <p className="text-[10px] text-[#0d0d0d]/30">{p.email}</p>
@@ -488,7 +496,7 @@ function Pagos({ pagos, totalIngresos, eventos, onActualizar }: any) {
                 <p className="text-[10px] uppercase tracking-[0.1em] text-[#0d0d0d]/40">{p.fecha}</p>
                 <select value={p.estado} onChange={(e) => onActualizar(p.id, e.target.value)}
                   className="bg-transparent text-[9px] uppercase tracking-[0.18em] font-medium focus:outline-none cursor-pointer text-[#0d0d0d]/60">
-                  {["Pagado", "Pendiente", "Fallido"].map((o) => <option key={o} value={o}>{o}</option>)}
+                  {["Pagado", "Pendiente"].map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
               </div>
             ))
