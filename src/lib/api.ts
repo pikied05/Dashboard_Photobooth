@@ -114,10 +114,11 @@ export const api = {
       return frameAMarco(fila, 0);
     },
 
-    update: async (id: string, data: { activo?: boolean; nombre?: string }) => {
+    update: async (id: string, data: { activo?: boolean; nombre?: string; fotos_compatibles?: number[] }) => {
       const cambios: any = { actualizado_en: new Date().toISOString() };
       if (typeof data.activo === "boolean") cambios.activo = data.activo;
       if (data.nombre) cambios.nombre = data.nombre;
+      if (data.fotos_compatibles?.length) cambios.fotos_compatibles = data.fotos_compatibles;
       ok(await supabase.from("frames").update(cambios).eq("id", id).select().single());
       return { ok: true };
     },

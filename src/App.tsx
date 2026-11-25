@@ -81,6 +81,18 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
     }
   };
 
+  const cambiarFotos = async (id: string, n: number, actuales: number[]) => {
+    const nuevas = actuales.includes(n) ? actuales.filter((x) => x !== n) : [...actuales, n].sort();
+    if (nuevas.length === 0) return; // al menos un tipo de foto
+    setMarcos((prev) => prev.map((m) => m.id === id ? { ...m, fotos_compatibles: nuevas } : m));
+    try {
+      await api.marcos.update(id, { fotos_compatibles: nuevas });
+    } catch (err) {
+      console.error("Error actualizando el tipo de foto:", err);
+      setMarcos((prev) => prev.map((m) => m.id === id ? { ...m, fotos_compatibles: actuales } : m));
+    }
+  };
+
   const cambiarModo = async (nuevo: "cabina" | "evento") => {
     if (nuevo === modo || guardandoModo) return;
     const anterior = modo;
@@ -170,14 +182,14 @@ function Dashboard({ onSalir }: { onSalir: () => void }) {
         <div className="mx-12 border-t border-[#0d0d0d]/10 mb-10" />
         <div className="px-12 pb-12">
           {navActivo === "resumen" && <Resumen totalIngresos={totalIngresos} totalFotos={totalFotos} marcosActivos={marcosActivos} boothActivo={boothActivo} setBoothActivo={setBoothActivo} pagos={pagos} marcos={marcos} />}
-          {navActivo === "marcos" && <Marcos marcos={marcos} toggleMarco={toggleMarco} arrastreEncima={arrastreEncima} setArrastreEncima={setArrastreEncima} onCrear={async (nombre: string, archivo: File | null) => {
+          {navActivo === "marcos" && <Marcos marcos={marcos} toggleMarco={toggleMarco} cambiarFotos={cambiarFotos} arrastreEncima={arrastreEncima} setArrastreEncima={setArrastreEncima} onCrear={async (nombre: string, archivo: File | null, fotos: number[]) => {
             let archivo_path: string | undefined;
             let medidas: { ancho_px?: number; alto_px?: number } = {};
             if (archivo) {
               medidas = await medirImagen(archivo);
               archivo_path = await subirImagenMarco(archivo);
             }
-            const m = await api.marcos.create({ nombre, archivo_path, ...medidas });
+            const m = await api.marcos.create({ nombre, archivo_path, fotos_compatibles: fotos, ...medidas });
             setMarcos((prev) => [...prev, m]);
           }} />}
           {navActivo === "fotobooth" && <PanelFotobooth boothActivo={boothActivo} setBoothActivo={setBoothActivo} />}
@@ -254,13 +266,17 @@ function Resumen({ totalIngresos, totalFotos, marcosActivos, boothActivo, setBoo
 /* ─── Marcos ─── */
 const MAX_MARCO_MB = 10;
 
-function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrear }: any) {
+function Marcos({ marcos, toggleMarco, cambiarFotos, arrastreEncima, setArrastreEncima, onCrear }: any) {
   const [nombreNuevo, setNombreNuevo] = useState("");
   const [archivo, setArchivo] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [fotosSel, setFotosSel] = useState<number[]>([]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const alternarFoto = (n: number) =>
+    setFotosSel((prev) => prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort());
 
   const validarYFijarArchivo = (file: File | undefined | null) => {
     setError(null);
@@ -281,12 +297,13 @@ function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrea
   };
 
   const handleCrear = async () => {
-    if (!nombreNuevo.trim()) return;
+    if (!nombreNuevo.trim() || fotosSel.length === 0) return;
     setGuardando(true);
     setError(null);
     try {
-      await onCrear(nombreNuevo.trim(), archivo);
+      await onCrear(nombreNuevo.trim(), archivo, fotosSel);
       setNombreNuevo("");
+      setFotosSel([]);
       setArchivo(null);
       setPreviewUrl(null);
       if (inputRef.current) inputRef.current.value = "";
@@ -330,12 +347,23 @@ function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrea
           </p>
           <p className="text-[10px] uppercase tracking-[0.15em] text-[#0d0d0d]/30 mt-1">PNG transparente recomendado · máx {MAX_MARCO_MB}MB</p>
         </div>
+        <div className="flex flex-col items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+          <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/30">Tipo de foto</p>
+          <div className="flex gap-1">
+            {[2, 3, 4].map((n) => (
+              <button key={n} onClick={() => alternarFoto(n)}
+                className={`px-4 py-1.5 text-[10px] uppercase tracking-[0.15em] border transition-colors ${fotosSel.includes(n) ? "bg-[#0d0d0d] text-[#e9e5dc] border-[#0d0d0d]" : "border-[#0d0d0d]/20 text-[#0d0d0d]/50 hover:border-[#0d0d0d]/50"}`}>
+                {n} fotos
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
           <input value={nombreNuevo} onChange={(e) => setNombreNuevo(e.target.value)}
             placeholder="Nombre del marco"
             className="px-4 py-2 bg-transparent border border-[#0d0d0d]/20 text-sm font-light focus:outline-none focus:border-[#0d0d0d]/50 placeholder-[#0d0d0d]/30"
             onKeyDown={(e) => e.key === "Enter" && handleCrear()} />
-          <button onClick={handleCrear} disabled={guardando || !nombreNuevo.trim()}
+          <button onClick={handleCrear} disabled={guardando || !nombreNuevo.trim() || fotosSel.length === 0}
             className="px-6 py-2 bg-[#0d0d0d] text-[#e9e5dc] text-[10px] uppercase tracking-[0.2em] font-medium hover:bg-[#0d0d0d]/80 transition-colors disabled:opacity-40">
             {guardando ? "Subiendo..." : "Agregar"}
           </button>
@@ -364,6 +392,18 @@ function Marcos({ marcos, toggleMarco, arrastreEncima, setArrastreEncima, onCrea
                   <p className="text-base font-bold leading-none" style={{ fontFamily: "'Playfair Display', serif" }}>{marco.usos}</p>
                   <p className="text-[9px] uppercase tracking-[0.2em] text-[#0d0d0d]/40 mt-0.5">usos</p>
                   <p className="text-[10px] font-light text-[#0d0d0d]/60 mt-1.5 truncate">{marco.nombre}</p>
+                </div>
+                <div className="flex justify-center gap-1">
+                  {[2, 3, 4].map((n) => {
+                    const activo = (marco.fotos_compatibles ?? []).includes(n);
+                    return (
+                      <button key={n} title={`Para ${n} fotos`}
+                        onClick={() => cambiarFotos(marco.id, n, marco.fotos_compatibles ?? [])}
+                        className={`w-6 h-6 text-[10px] border transition-colors ${activo ? "bg-[#0d0d0d] text-[#e9e5dc] border-[#0d0d0d]" : "border-[#0d0d0d]/20 text-[#0d0d0d]/30 hover:border-[#0d0d0d]/50"}`}>
+                        {n}
+                      </button>
+                    );
+                  })}
                 </div>
                 <button onClick={() => toggleMarco(marco.id, marco.activo)}
                   className={`text-[9px] uppercase tracking-[0.2em] font-medium py-1.5 transition-colors ${marco.activo ? "bg-[#0d0d0d] text-[#e9e5dc]" : "bg-[#0d0d0d]/10 text-[#0d0d0d]/40"}`}>
